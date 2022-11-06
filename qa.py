@@ -5,13 +5,14 @@ import spacy
 import torch
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
+from sklearn.metrics.pairwise import cosine_similarity   
 
 '''
 Takes a string of text, a bert tokenizer and a bert model and returns an embedding vector of size (1,768)
 '''
 def get_bert_embedding(text, tokenizer, bert_model):
     
-    encoded_input = tokenizer.encode_plus(text, max_length=128, truncation=True, padding='max_length', return_tensors='pt')                                                
+    encoded_input = tokenizer.encode_plus(text, max_length=128, truncation=True, padding='max_length', return_tensors='pt')                                             
     output = bert_model(**encoded_input)
     embeddings = output.last_hidden_state
     attention_mask = encoded_input['attention_mask']
@@ -37,7 +38,7 @@ def process_data(input_file, nlp, tokenizer, bert_model):
     '''
     Dictionary that contains the qestions and answers.  The key is the question_id and the values are a dictionary with the question text, answer text, embedding
     vector for the question.
-    {<question_id>: {"Question":<question_string>, "Answer":<answer_string>, "Embedding":<embedding vector for question>}}
+    {<question_id>: {"Question":<question_string>, "Answer":<answer_string>, "Embeddings":<embedding vector for question>}}
     '''
     qa_dict = {}
 
@@ -49,28 +50,70 @@ def process_data(input_file, nlp, tokenizer, bert_model):
         for file in [".story", ".questions", ".answers"]:
             path = directory + item + file
             with open(path) as f:
+                input_data = [ line.strip() for line in f ]
+                input_data = list(filter(None, input_data))
                 
                 #if the document is a story, the entire text is saved in a dictionary along with a list of individuals sentences and their bert embeddings
                 if file == ".story":
-                    story_info = {"Text":None, "Sentences":None, "Embedding":None, "NLP":None}
-                    story = [ line.strip() for line in f ]
-                    story = list(filter(None, story))
-                    story = " ".join(story[4:])
+                    story_info = {"Text":None, "Sentences":None, "Embeddings":None, "NLP":None}
+                    story_id = input_data[2].replace("STORYID: ","")
+                    story = " ".join(input_data[4:])
                     story_info["Text"] = story
                     doc = nlp(story)
                     sentences = [sent.text for sent in doc.sents]
-                    print(sentences)
-                    print("\n")
                     story_info["Sentences"] = sentences
                     story_info["NLP"] = doc
                     embeddings = []
                     for sentence in sentences:
                         embedding = get_bert_embedding(sentence, tokenizer, bert_model)
                         embeddings.append(embedding)
-                    story_info["Embedding"] = embeddings
-
+                    story_info["Embeddings"] = embeddings
+                    story_dict[story_id] = story_info
                 if file == ".answers":
-                    qa_info = {"Question":none, "Answer":None, "Embedding":None}
+                    for item in input_data:
+                        if "QuestionID" in item:
+                            question_id = item.replace("QuestionID: ","")
+                            qa_info = {"Question":None, "Answer":None, "Embedding":None}
+                        elif "Question" in item:
+                            question = item.replace("Question: ","")
+                            qa_info["Question"] = question
+                            embedding = get_bert_embedding(question, tokenizer, bert_model)
+                            qa_info["Embedding"] = embedding
+                        elif "Answer" in item:
+                            answer = item.replace("Answer: ","")
+                            qa_info["Answer"] = answer
+                            qa_dict[question_id] = qa_info        
+    
+    return story_dict, qa_dict
+
+def create_answers(story_dict, qa_dict):
+    for question_id, question_info in qa_dict.items():
+        question = question_info["Question"]
+        story_id = question_id[:10]
+        question_embedding = question_info["Embedding"]
+        answer = question_info["Answer"]
+        candidates = set()
+        if "where" in question.lower():
+            doc = story_dict[story_id]["NLP"]
+            for ent in doc.ents:
+                if ent.label == "LOC":
+                    candidates.add(ent.text)
+            for chunk in doc.noun_chunks:
+                if chunk.root.head.text in ["in","at","on"]:
+                    candidates.add(chunk.text)
+            
+            max_score = 0
+            best_candidate = None
+            for candidate in candidates:
+                for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
+                    if candidate in sentence:
+                        sentence_embedding = story_dict[story_id]["Embeddings"][index]
+                        similarity_score = cosine_similarity(question_embedding, sentence_embedding)
+                        if similarity_score > max_score:
+                            max_score = similarity_score
+                            best_candidate = candidate
+            print("Best candidate: {}".format(best_candidate))
+            print("Answer: {}".format(answer))
 
 
 if __name__ == '__main__':
@@ -81,11 +124,9 @@ if __name__ == '__main__':
     bert_model = AutoModel.from_pretrained("bert-base-uncased")
     
     #open file for processing
-    data = process_data(input_file, nlp, tokenizer, bert_model)
-    #unpack data
-    #story_dict, qa_dict, signature_vectors = input_data
-
-    #get_answers(story_dict, qa_dict, signature_vectors, nlp, tokenizer, bert_model)
+    story_dict, qa_dict = process_data(input_file, nlp, tokenizer, bert_model)
+    #print(story_dict, qa_dict)
+    create_answers(story_dict, qa_dict)
 
 
 
