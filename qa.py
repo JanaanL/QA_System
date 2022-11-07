@@ -24,6 +24,13 @@ def get_bert_embedding(text, tokenizer, bert_model):
     return mean_pooled.detach().numpy()
 
 
+#def keyword_distance(keywords, candidates, story):
+#    for keyword in keywords:
+#        for candidate in candidates:
+#            doc = nlp(storY)
+#            for token in doc:
+#                if token.text == candidate
+
 def process_data(input_file, nlp, tokenizer, bert_model):
     
     '''
@@ -86,34 +93,71 @@ def process_data(input_file, nlp, tokenizer, bert_model):
     
     return story_dict, qa_dict
 
-def create_answers(story_dict, qa_dict):
+def create_answers(story_dict, qa_dict, nlp):
     for question_id, question_info in qa_dict.items():
         question = question_info["Question"]
         story_id = question_id[:10]
         question_embedding = question_info["Embedding"]
         answer = question_info["Answer"]
         candidates = set()
+        keywords = set()
+        doc = nlp(story_dict[story_id]["Text"])
+
+        #WHERE questions
         if "where" in question.lower():
-            doc = story_dict[story_id]["NLP"]
             for ent in doc.ents:
-                if ent.label == "LOC":
+                if ent.label_ in ["LOC", "FAC"]:
                     candidates.add(ent.text)
             for chunk in doc.noun_chunks:
                 if chunk.root.head.text in ["in","at","on"]:
                     candidates.add(chunk.text)
+                    print(chunk.i)
+        #WHO questions        
+        elif "who" in question.lower():
+            candidates_pos = {}
+            for token in nlp(question):
+                print(token.text, token.dep_, token.head.text)
+            for ent in doc.ents:
+                if ent.label_ in ["GPE","NORP","ORG","PERSON"]:
+                    candidates.add(ent.text)
+                    print(token.i)
+            for token in nlp(question):
+                if token.dep_ in ["dobj", "attr"]:
+                    keywords.add(token.text)
             
-            max_score = 0
-            best_candidate = None
-            for candidate in candidates:
-                for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
-                    if candidate in sentence:
-                        sentence_embedding = story_dict[story_id]["Embeddings"][index]
-                        similarity_score = cosine_similarity(question_embedding, sentence_embedding)
-                        if similarity_score > max_score:
-                            max_score = similarity_score
-                            best_candidate = candidate
-            print("Best candidate: {}".format(best_candidate))
-            print("Answer: {}".format(answer))
+        
+        #WHEN questions
+        elif "when" in question.lower():
+            for ent in doc.ents:
+                if ent.label_ in["DATE","EVENT","TIME"]:
+                    candidates.add(ent.text)
+
+        #HOW MANY
+        elif "how many" in question.lower():
+            for ent in doc.ents:
+                if ent.label_ in ["CARDINAL","ORDINAL","PERCENT","QUANTITY"]:
+                    candidates.add(ent.text)
+
+        #HOW MUCH
+        elif "how much" in question.lower():
+            for ent in doc.ents:
+                if ent.label_ in ["MONEY","PERCENT","QUANTITY"]:
+                    candidates.add(ent.text)
+
+        max_score = 0
+        best_candidate = None
+        for candidate in candidates:
+            for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
+                if candidate in sentence:
+                    sentence_embedding = story_dict[story_id]["Embeddings"][index]
+                    similarity_score = cosine_similarity(question_embedding, sentence_embedding)
+                    #keywords_score = compute_keywords_dist(keywords, story)
+                    if similarity_score > max_score:
+                        max_score = similarity_score
+                        best_candidate = candidate
+        print("Question: {}".format(question))            
+        print("Best candidate: {}".format(best_candidate))
+        print("Answer: {}".format(answer))
 
 
 if __name__ == '__main__':
@@ -126,7 +170,7 @@ if __name__ == '__main__':
     #open file for processing
     story_dict, qa_dict = process_data(input_file, nlp, tokenizer, bert_model)
     #print(story_dict, qa_dict)
-    create_answers(story_dict, qa_dict)
+    create_answers(story_dict, qa_dict, nlp)
 
 
 
