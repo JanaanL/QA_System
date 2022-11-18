@@ -148,6 +148,8 @@ def process_data(input_file, nlp, tokenizer, bert_model, process=True):
     return story_dict, qa_dict
 
 def create_answers(story_dict, qa_dict, nlp):
+    st = LancasterStemmer()
+    
     for question_id, question_info in qa_dict.items():
         question = question_info["Question"]
         story_id = question_id[:10]
@@ -160,82 +162,123 @@ def create_answers(story_dict, qa_dict, nlp):
 #        displacy.serve(ques, style='dep')
 
         #WHERE questions
-        if "where" in question.lower():
-#            print(question)
-            for ent in doc.ents:
-                if ent.label_ in ["LOC", "FAC"]:
-                    candidates.add(ent.text)
-            for chunk in doc.noun_chunks:
-                for candidate in candidates.copy():
-                   if candidate in chunk.text:
-                       candidates.remove(candidate)
-                       candidates.add(chunk.text)
-                if chunk.root.head.text in ["in","at","on","by"]:
-                    candidates.add(chunk.text)
-            for q_token in q_tokens:
-                if q_token.dep_ in ["nsubj", "ROOT", "dobj", "pobj", "ccomp"]:
-                    keywords.add(q_token.text)
-        
-        #WHO questions        
-        elif "who" in question.lower():
+#        if "where" in question.lower():
+##            print(question)
+#            for ent in doc.ents:
+#                if ent.label_ in ["LOC", "FAC"]:
+#                    candidates.add(ent.text)
+#            for chunk in doc.noun_chunks:
+#                for candidate in candidates.copy():
+#                   if candidate in chunk.text:
+#                       candidates.remove(candidate)
+#                       candidates.add(chunk.text)
+#                if chunk.root.head.text in ["in","at","on","by"]:
+#                    candidates.add(chunk.text)
+#            for q_token in q_tokens:
+#                if q_token.dep_ in ["nsubj", "ROOT", "dobj", "pobj", "ccomp"]:
+#                    keywords.add(q_token.text)
+#       
+#       #WHO questions        
+#        elif  "who" in question.lower():
+##            for token in nlp(question):
+##                print(token.text, token.dep_, token.head.text)
+#
+#            for ent in doc.ents:
+#                if ent.label_ in ["GPE","NORP","ORG","PERSON"]:
+##                    print(ent.text, ent.label_)
+#                    candidates.add(ent.text)
+#            for chunk in doc.noun_chunks:
+# #               print(chunk.text)
+#                for candidate in candidates.copy():
+#                    if candidate in chunk.text:
+#                        candidates.remove(candidate)
+#                        candidates.add(chunk.text)
+#            #print("Candidates: {}".format(candidates))
 #            for token in nlp(question):
-#                print(token.text, token.dep_, token.head.text)
-
-            for ent in doc.ents:
-                if ent.label_ in ["GPE","NORP","ORG","PERSON"]:
-#                    print(ent.text, ent.label_)
-                    candidates.add(ent.text)
-            for chunk in doc.noun_chunks:
- #               print(chunk.text)
-                for candidate in candidates.copy():
-                    if candidate in chunk.text:
-                        candidates.remove(candidate)
-                        candidates.add(chunk.text)
-            #print("Candidates: {}".format(candidates))
-            for token in nlp(question):
-                if token.dep_ in ["dobj", "attr","nsubj", "pobj"]:
-                    keywords.add(token.text.lower())
-            
-        
-        #WHEN questions
-        elif "when" in question.lower():
-            from_to_candidate = re.search("^[Ff]+rom [\d\w\s,.]+ to [\d\w\s,.]+$", story_dict[story_id]["Text"])
-            if from_to_candidate is not None:
-                candidates.add(from_to_candidate.group())
-    
-            for ent in doc.ents:
-                if ent.label_ in["DATE","EVENT","TIME"]:
-                    candidates.add(ent.text)
-            for chunk in doc.noun_chunks:
-                for candidate in candidates.copy():
-                    if candidate in chunk.text:
-                        candidates.remove(candidate)
-                        candidates.add(chunk.text)
-                if chunk.root.head.text in ["during", "after", "before", "while"]:
-                    candidates.add(chunk.text)
-            for token in nlp(question):
-                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-                    keywords.add(token.text.lower())
+#                if token.dep_ in ["dobj", "attr","nsubj", "pobj"]:
+#                    keywords.add(token.text.lower())
+#           
+#        
+#        #WHEN questions
+#        elif question.startswith("When"):
+#            from_to_candidate = re.search("^[Ff]+rom [\d\w\s,.]+ to [\d\w\s,.]+$", story_dict[story_id]["Text"])
+#            if from_to_candidate is not None:
+#                candidates.add(from_to_candidate.group())
+#            for token in doc:
+#                if token.text == "when":
+#                    head = token.head
+#                    phrase = ""
+#                    for word in head.subtree:
+#                        phrase = phrase + word.text + " "
+#                    candidates.add(phrase)
+#
+#            for ent in doc.ents:
+#                if ent.label_ in["DATE","EVENT","TIME"]:
+#                    candidates.add(ent.text)
+#            for chunk in doc.noun_chunks:
+#                for candidate in candidates.copy():
+#                    if candidate in chunk.text:
+#                        candidates.remove(candidate)
+#                        candidates.add(chunk.text)
+#                for prep in ["during", "after", "before", "while", "as"]:
+#                    if chunk.root.head.text == prep:
+#                        candidates.add(prep + " " + chunk.text)
+#            for token in nlp(question):
+#                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
+#                    keywords.add(token.text.lower())
 
         #HOW MANY
-        elif "how many" in question.lower():
-            for ent in doc.ents:
-                if ent.label_ in ["CARDINAL","ORDINAL","PERCENT","QUANTITY"]:
-                    candidates.add(ent.text)
-            for token in nlp(question):
-                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-                    keywords.add(token.text.lower())
+        if question.startswith("How"):
+            second_word = question.split(' ')[1]
+            if second_word == "many": 
+                for ent in doc.ents:
+                    if ent.label_ in ["CARDINAL","PERCENT","QUANTITY"]:
+                        candidates.add(ent.text)
+                for token in nlp(question):
+                    if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
+                        keywords.add(token.text.lower())
 
-        #HOW MUCH
-        elif "how much" in question.lower():
-            for ent in doc.ents:
-                if ent.label_ in ["MONEY","PERCENT"]:
-                    candidates.add(ent.text)
-            for token in nlp(question):
-                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-                    keywords.add(token.text.lower())
+            #HOW MUCH
+            elif second_word == "much":
+                for ent in doc.ents:
+                    if ent.label_ in ["MONEY","PERCENT"]:
+                        candidates.add(ent.text)
+                for token in nlp(question):
+                    if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
+                        keywords.add(token.text.lower())
 
-        elif "how" in question.lower() or "why" in question.lower() or "what" in question.lower():
+            else:
+                for token in nlp(question):
+                    if token.text == second_word:
+                        if token.pos_ in ["ADV", "ADJ"]:
+                            for ent in doc.ents:
+                                if ent.label_ in ["CARDINAL", "ORDINAL", "QUANTITY"]:
+                                    candidates.add(ent.text)
+                            for token in nlp(question):
+                                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
+                                    keywords.add(token.text.lower())   
+
+                        if token.pos_ in ["AUX", "VERB"]:
+                            for word in nlp(question):
+                                if word.dep_ == "nsubj":
+                                    subject = word.text
+                                    print("Subject {}".format(subject))
+                                    for w in doc:
+                                        if w.text == subject:
+                                            subtree = w.head.subtree
+                                            phrase = ""
+                                            for word in subtree:
+                                                phrase = phrase + word.text + " "
+                                            candidates.add(phrase)
+                                            print("Phrase added: {}".format(phrase))
+                                if word.dep_ == "ROOT":
+                                    keywords.add(word.text)
+                            for token in nlp(question):
+                                if token.dep_ in ["dobj", "attr","nsubj", "pobj", "ROOT", "iobj"]:
+                                    keywords.add(token.text.lower())
+
+        
+        elif "why" in question.lower() or "what" in question.lower():
             for token in nlp(question):
                 if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
                     keywords.add(token.text.lower())
@@ -243,6 +286,7 @@ def create_answers(story_dict, qa_dict, nlp):
         max_score = 0
         best_candidate = ""
         for candidate in candidates:
+            print("Candidate for consideration: {}".format(candidate))
             for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
                 if candidate in sentence:
                     sentence_embedding = story_dict[story_id]["Embeddings"][index]
@@ -256,11 +300,15 @@ def create_answers(story_dict, qa_dict, nlp):
                     if score > max_score:
                         max_score = score
                         best_candidate = candidate
-        print("QuestionID: {}".format(question_id))
-        #print("Question: {}".format(question))            
-        print("Answer: {}".format(best_candidate))
-        #print("Answer: {}".format(answer))
-        print()
+#        print("QuestionID: {}".format(question_id))
+#        print("Answer: {}".format(best_candidate))            
+#        print()
+       #print("Answer Candidate: {}".format(best_candidate))
+        if question.startswith("How"):
+            print("Question: {}".format(question))            
+            print("Answer Candidate: {}".format(best_candidate))
+            print("Actual Answer: {}".format(answer))
+            print()
 
 if __name__ == '__main__':
     
