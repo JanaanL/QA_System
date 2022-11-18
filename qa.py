@@ -4,6 +4,7 @@ import spacy
 import torch
 import pickle
 import re
+import math
 #import argparse
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
@@ -48,13 +49,16 @@ def find_position_of_phrase(phrase, doc):
 def keyword_distance(keywords, candidate, doc):
     st = LancasterStemmer()
     can_start_pos = find_position_of_phrase(candidate, doc)
-    keywords_dist = np.zeros(len(keywords))
+    keywords_dist = np.array(np.ones(len(keywords)) * np.inf)
     for token in doc:
         for index, keyword in enumerate(keywords):
             if st.stem(keyword) == st.stem(token.text.lower()):
                 #print("Found a match for the keyword {}".format(st.stem(token.text.lower())))
                 dist = abs(can_start_pos - token.i)
-                keywords_dist[index] = dist
+                #print("Distance is {}".format(dist))
+                if dist < keywords_dist[index]:
+                    keywords_dist[index] = dist
+    keywords_dist[keywords_dist == np.inf] = 0
     average = np.mean(keywords_dist)
     if average != 0:
         return 1.0 / average
@@ -147,7 +151,7 @@ def process_data(input_file, nlp, tokenizer, bert_model, process=True):
 
     return story_dict, qa_dict
 
-def create_answers(story_dict, qa_dict, nlp):
+def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
     st = LancasterStemmer()
     
     for question_id, question_info in qa_dict.items():
@@ -162,153 +166,237 @@ def create_answers(story_dict, qa_dict, nlp):
 #        displacy.serve(ques, style='dep')
 
         #WHERE questions
-#        if "where" in question.lower():
-##            print(question)
-#            for ent in doc.ents:
-#                if ent.label_ in ["LOC", "FAC"]:
-#                    candidates.add(ent.text)
-#            for chunk in doc.noun_chunks:
-#                for candidate in candidates.copy():
-#                   if candidate in chunk.text:
-#                       candidates.remove(candidate)
-#                       candidates.add(chunk.text)
-#                if chunk.root.head.text in ["in","at","on","by"]:
-#                    candidates.add(chunk.text)
-#            for q_token in q_tokens:
-#                if q_token.dep_ in ["nsubj", "ROOT", "dobj", "pobj", "ccomp"]:
-#                    keywords.add(q_token.text)
-#       
-#       #WHO questions        
-#        elif  "who" in question.lower():
-##            for token in nlp(question):
-##                print(token.text, token.dep_, token.head.text)
-#
-#            for ent in doc.ents:
-#                if ent.label_ in ["GPE","NORP","ORG","PERSON"]:
-##                    print(ent.text, ent.label_)
-#                    candidates.add(ent.text)
-#            for chunk in doc.noun_chunks:
-# #               print(chunk.text)
-#                for candidate in candidates.copy():
-#                    if candidate in chunk.text:
-#                        candidates.remove(candidate)
-#                        candidates.add(chunk.text)
-#            #print("Candidates: {}".format(candidates))
+        if question.startswith("Where"):
+#            print("Story:")
+#            print(story_dict[story_id]["Text"])
+            for ent in doc.ents:
+#                print(ent.text, ent.label_)
+                if ent.label_ in ["LOC", "FAC", "GPE"]:
+                    candidates.add(ent.text)
+            for chunk in doc.noun_chunks:
+                for candidate in candidates.copy():
+                   if candidate in chunk.text:
+                       candidates.remove(candidate)
+                       candidates.add(chunk.text)
+                for prep in ["in","at","on"]:
+                    if prep == chunk.root.head.text:
+                        candidates.add(prep + " " + chunk.text)
+            for q_token in q_tokens:
+                if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
+                    keywords.add(q_token.text)
+                if q_token.dep_ == "ROOT":
+                    for child in q_token.children:
+                        if child.dep_ != "punct" and child.text != "Where":
+                            keywords.add(child.text)
+ #           print("keywords: {}".format(keywords))       
+       #WHO questions        
+        elif  question.startswith("Who"):
 #            for token in nlp(question):
-#                if token.dep_ in ["dobj", "attr","nsubj", "pobj"]:
-#                    keywords.add(token.text.lower())
-#           
-#        
-#        #WHEN questions
-#        elif question.startswith("When"):
-#            from_to_candidate = re.search("^[Ff]+rom [\d\w\s,.]+ to [\d\w\s,.]+$", story_dict[story_id]["Text"])
-#            if from_to_candidate is not None:
-#                candidates.add(from_to_candidate.group())
-#            for token in doc:
-#                if token.text == "when":
-#                    head = token.head
-#                    phrase = ""
-#                    for word in head.subtree:
-#                        phrase = phrase + word.text + " "
-#                    candidates.add(phrase)
-#
-#            for ent in doc.ents:
-#                if ent.label_ in["DATE","EVENT","TIME"]:
-#                    candidates.add(ent.text)
-#            for chunk in doc.noun_chunks:
-#                for candidate in candidates.copy():
-#                    if candidate in chunk.text:
-#                        candidates.remove(candidate)
-#                        candidates.add(chunk.text)
-#                for prep in ["during", "after", "before", "while", "as"]:
-#                    if chunk.root.head.text == prep:
-#                        candidates.add(prep + " " + chunk.text)
-#            for token in nlp(question):
-#                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-#                    keywords.add(token.text.lower())
+#                print(token.text, token.dep_, token.head.text)
+
+            for ent in doc.ents:
+                if ent.label_ in ["GPE","NORP","ORG","PERSON"]:
+#                    print(ent.text, ent.label_)
+                    candidates.add(ent.text)
+            for chunk in doc.noun_chunks:
+ #               print(chunk.text)
+                for candidate in candidates.copy():
+                    if candidate in chunk.text:
+                        candidates.remove(candidate)
+                        candidates.add(chunk.text)
+            #print("Candidates: {}".format(candidates))
+            for q_token in q_tokens:
+                if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
+                    keywords.add(q_token.text.lower())
+           
+                if q_token.dep_ == "ROOT":
+                    for child in q_token.children:
+                        if child.dep_ != "punct" and child.text != "Who":
+                            keywords.add(child.text)
+        
+        #WHEN questions
+        elif question.startswith("When"):
+            from_to_candidate = re.search("^[Ff]+rom [\d\w\s,.]+ to [\d\w\s,.]+$", story_dict[story_id]["Text"])
+            if from_to_candidate is not None:
+                candidates.add(from_to_candidate.group())
+            for token in doc:
+                if token.text == "when":
+                    head = token.head
+                    phrase = ""
+                    for word in head.subtree:
+                        phrase = phrase + word.text + " "
+                    candidates.add(phrase)
+
+            for ent in doc.ents:
+                if ent.label_ in["DATE","EVENT","TIME"]:
+                    candidates.add(ent.text)
+            for chunk in doc.noun_chunks:
+                for candidate in candidates.copy():
+                    if candidate in chunk.text:
+                        candidates.remove(candidate)
+                        candidates.add(chunk.text)
+                for prep in ["during", "after", "before", "while", "as"]:
+                    if chunk.root.head.text == prep:
+                        candidates.add(prep + " " + chunk.text)
+            for q_token in q_tokens:
+                if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
+                    keywords.add(q_token.text.lower())
+           
+                if q_token.dep_ == "ROOT":
+                    for child in q_token.children:
+                        if child.dep_ != "punct" and child.text != "When":
+                            keywords.add(child.text)
 
         #HOW MANY
-        if question.startswith("How"):
+        elif question.startswith("How"):
             second_word = question.split(' ')[1]
             if second_word == "many": 
                 for ent in doc.ents:
                     if ent.label_ in ["CARDINAL","PERCENT","QUANTITY"]:
                         candidates.add(ent.text)
-                for token in nlp(question):
-                    if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-                        keywords.add(token.text.lower())
+                for q_token in q_tokens:
+                    if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
+                        keywords.add(q_token.text.lower())
+           
+                    if q_token.dep_ == "ROOT":
+                        for child in q_token.children:
+                            if child.dep_ != "punct" and child.text != "How":
+                                keywords.add(child.text)
 
             #HOW MUCH
             elif second_word == "much":
                 for ent in doc.ents:
                     if ent.label_ in ["MONEY","PERCENT"]:
                         candidates.add(ent.text)
-                for token in nlp(question):
-                    if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-                        keywords.add(token.text.lower())
+                for q_token in q_tokens:
+                    if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj","attr"]:
+                        keywords.add(q_token.text.lower())
+           
+                    if q_token.dep_ == "ROOT":
+                        for child in q_token.children:
+                            if child.dep_ != "punct" and child.text != "How":
+                                keywords.add(child.text)
 
             else:
-                for token in nlp(question):
-                    if token.text == second_word:
-                        if token.pos_ in ["ADV", "ADJ"]:
+                for q_token in q_tokens:
+                    if q_token.text == second_word:
+                        if q_token.pos_ in ["ADV", "ADJ"]:
                             for ent in doc.ents:
                                 if ent.label_ in ["CARDINAL", "ORDINAL", "QUANTITY"]:
                                     candidates.add(ent.text)
-                            for token in nlp(question):
-                                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-                                    keywords.add(token.text.lower())   
+                            for token in q_tokens:
+                                if token.dep_ in ["nsubj", "dobj", "pobj", "iobj","attr"]:
+                                    keywords.add(token.text.lower())
+                   
+                                if token.dep_ == "ROOT":
+                                    for child in token.children:
+                                        if child.dep_ != "punct" and child.text != "How":
+                                            keywords.add(child.text)
 
-                        if token.pos_ in ["AUX", "VERB"]:
-                            for word in nlp(question):
+                        if q_token.pos_ in ["AUX", "VERB"]:
+                            for word in q_tokens:
                                 if word.dep_ == "nsubj":
                                     subject = word.text
-                                    print("Subject {}".format(subject))
+ #                                   print("Subject {}".format(subject))
                                     for w in doc:
                                         if w.text == subject:
                                             subtree = w.head.subtree
                                             phrase = ""
                                             for word in subtree:
-                                                phrase = phrase + word.text + " "
+                                                if word.dep_ in ["punct", "case", "neg"]:
+                                                    phrase = phrase[:-1]
+                                                if word.text in ["-","$"]:
+                                                    phrase = phrase + word.text
+                                                else:
+                                                    phrase = phrase + word.text + " "
                                             candidates.add(phrase)
-                                            print("Phrase added: {}".format(phrase))
+#                                            print("Phrase added: {}".format(phrase))
+                                if word.dep_ in ["dobj", "pobj", "iobj","attr"]:
+                                    keywords.add(word.text.lower())
+                   
                                 if word.dep_ == "ROOT":
-                                    keywords.add(word.text)
-                            for token in nlp(question):
-                                if token.dep_ in ["dobj", "attr","nsubj", "pobj", "ROOT", "iobj"]:
-                                    keywords.add(token.text.lower())
-
+                                    for child in word.children:
+                                        if child.dep_ != "punct" and child.text != "How":
+                                            keywords.add(child.text)
         
-        elif "why" in question.lower() or "what" in question.lower():
-            for token in nlp(question):
-                if token.dep_ in ["dobj", "attr","nsubj", "pobj","ROOT"]:
-                    keywords.add(token.text.lower())
-            
-        max_score = 0
+        else:
+            for word in q_tokens:
+                if word.dep_ == "nsubj":
+                    subject = word.text
+                    for w in doc:
+                        if w.text == subject:
+                            subtree = w.head.subtree
+                            phrase = ""
+                            for word in subtree:
+                                if word.dep_ in ["punct", "case", "neg"]:
+                                    phrase = phrase[:-1]
+                                if word.text in ["-","$"]:
+                                    phrase = phrase + word.text
+                                else:
+                                    phrase = phrase + word.text + " "
+                            candidates.add(phrase)
+ #                           print("Phrase added: {}".format(phrase))
+
+                if word.dep_ in ["dobj", "pobj", "iobj","attr"]:
+                    keywords.add(word.text.lower())
+
+                if word.dep_ == "ROOT":
+                    for child in word.children:
+                        if child.dep_ != "punct" and child.text not in ["Why","What"]:
+                            keywords.add(child.text)
+            if len(candidates) == 0:
+                for word in q_tokens:
+                    if word.pos_ == "VERB":
+                        verb = word.text
+                        for w in doc:
+                            if st.stem(w.text) == st.stem(verb):
+                                subtree = w.head.subtree
+                                phrase = ""
+                                for word in subtree:
+                                    if word.dep_ in ["punct", "case", "neg"]:
+                                        phrase = phrase[:-1]
+                                    if word.text in ["-","$"]:
+                                        phrase = phrase + word.text
+                                    else:
+                                        phrase = phrase + word.text + " "
+                                candidates.add(phrase)
+        
+        max_score = -math.inf 
         best_candidate = ""
+        similarity_score = 0
         for candidate in candidates:
-            print("Candidate for consideration: {}".format(candidate))
+            phrase = True
+            #print("Candidate for consideration: {}".format(candidate))
             for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
                 if candidate in sentence:
                     sentence_embedding = story_dict[story_id]["Embeddings"][index]
                     similarity_score = cosine_similarity(question_embedding, sentence_embedding)
-                    if len(keywords) > 0:
-                        keywords_score = keyword_distance(keywords, candidate, doc)
-                    else:
-                        keywords_score = 0
-                    score = similarity_score + keywords_score
+                    phrase = False
+            
+            if phrase:
+                phrase_embedding = get_bert_embedding(candidate, tokenizer, bert_model)
+                similarity_score = cosine_similarity(question_embedding, phrase_embedding)
+            if len(keywords) > 0:
+                keywords_score = keyword_distance(keywords, candidate, doc)
+            else:
+                keywords_score = 0
+            score = similarity_score + keywords_score
 
-                    if score > max_score:
-                        max_score = score
-                        best_candidate = candidate
-#        print("QuestionID: {}".format(question_id))
-#        print("Answer: {}".format(best_candidate))            
+            if score > max_score:
+                max_score = score
+                best_candidate = candidate
+#        print("Question: {}".format(question))
+#        print("Answer Candidate: {}".format(best_candidate))
+#        print("Answer: {}".format(answer))
 #        print()
-       #print("Answer Candidate: {}".format(best_candidate))
-        if question.startswith("How"):
-            print("Question: {}".format(question))            
-            print("Answer Candidate: {}".format(best_candidate))
-            print("Actual Answer: {}".format(answer))
-            print()
+        print("QuestionID: {}".format(question_id))
+        print("Answer: {}".format(best_candidate))            
+        print()
+#        if question.startswith("Where"):
+#            print("Question: {}".format(question))            
+#            print("Answer Candidate: {}".format(best_candidate))
+#            print("Actual Answer: {}".format(answer))
+#            print()
 
 if __name__ == '__main__':
     
@@ -323,7 +411,7 @@ if __name__ == '__main__':
     #open file for processing
     story_dict, qa_dict = process_data(input_file, nlp, tokenizer, bert_model, process=False)
     #print(story_dict, qa_dict)
-    create_answers(story_dict, qa_dict, nlp)
+    create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer)
 
 
 
