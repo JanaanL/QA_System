@@ -5,15 +5,29 @@ import torch
 import pickle
 import re
 import math
+import copy
 #import argparse
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
 from sklearn.metrics.pairwise import cosine_similarity   
 from nltk.stem.lancaster import LancasterStemmer
 from spacy import displacy
+
+def process_stopwords():                                                                                                                                              
+    stopwords = set()
+    filename = "stopwords.txt"
+    with open(filename) as f:
+        line = f.readline()
+        while line:
+            if line != '':
+                stopwords.add(line.lower().replace("\n",""))
+                line = f.readline()
+        return stopwords
+
 '''
 Takes a string of text, a bert tokenizer and a bert model and returns an embedding vector of size (1,768)
 '''
+
 def get_bert_embedding(text, tokenizer, bert_model):
     
     encoded_input = tokenizer.encode_plus(text, max_length=128, truncation=True, padding='max_length', return_tensors='pt')                                             
@@ -46,24 +60,47 @@ def find_position_of_phrase(phrase, doc):
         #print("Could not find position of {} in document".format(phrase))
     return start_pos
 
-def keyword_distance(keywords, candidate, doc):
+def keyword_distance(keywords, candidate, c_index, doc):
     st = LancasterStemmer()
-    can_start_pos = find_position_of_phrase(candidate, doc)
     keywords_dist = np.array(np.ones(len(keywords)) * np.inf)
-    for token in doc:
-        for index, keyword in enumerate(keywords):
+#    print("Keywords: {}".format(keywords))
+    
+    index = 0
+    for keyword, weight in keywords.items():
+ #       print(keyword)
+        min_dist = np.inf
+        for token in doc:
             if st.stem(keyword) == st.stem(token.text.lower()):
-                #print("Found a match for the keyword {}".format(st.stem(token.text.lower())))
-                dist = abs(can_start_pos - token.i)
-                #print("Distance is {}".format(dist))
-                if dist < keywords_dist[index]:
-                    keywords_dist[index] = dist
+            #if keyword == token.text.lower():
+                dist = abs(c_index - token.i)
+                if dist < min_dist:
+                    min_dist = dist
+        keyword_distance = min_dist / weight
+  #      print(keyword_distance)
+        keywords_dist[index] = keyword_distance    
+        index += 1
+
+
     keywords_dist[keywords_dist == np.inf] = 0
     average = np.mean(keywords_dist)
     if average != 0:
         return 1.0 / average
     else:
         return 0
+            
+
+def special_score_heuristics(question_type, candidate, index, doc):
+   score = 0
+   candidate_words = list(candidate.split())
+   end_index = index + len(candidate_words)
+   for token in doc:
+       if token.i >= index and token.i <+ end_index:
+           if question_type in ['where', 'who'] and token.dep_ == 'pobj':
+               score = 0.25
+               break
+   return score
+
+
 
 def process_data(input_file, nlp, tokenizer, bert_model, process=True):
 
@@ -101,13 +138,15 @@ def process_data(input_file, nlp, tokenizer, bert_model, process=True):
                     
                     #if the document is a story, the entire text is saved in a dictionary along with a list of individuals sentences and their bert embeddings
                     if file == ".story":
-                        story_info = {"Text":None, "Sentences":None, "Embeddings":None, "NLP":None}
+                        story_info = {"Text":None, "Sentences":None, "Sentence_Index":None, "Embeddings":None, "NLP":None}
                         story_id = input_data[2].replace("STORYID: ","")
                         story = " ".join(input_data[4:])
                         story_info["Text"] = story
                         doc = nlp(story)
                         sentences = [sent.text for sent in doc.sents]
                         story_info["Sentences"] = sentences
+                        sentence_start_index = [sent.start for sent in doc.sents]
+                        story_info["Sentence_Index"] = sentence_start_index
                         story_info["NLP"] = doc
                         embeddings = []
                         for sentence in sentences:
@@ -153,129 +192,109 @@ def process_data(input_file, nlp, tokenizer, bert_model, process=True):
 
 def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
     st = LancasterStemmer()
+    stopwords = process_stopwords()
+    question_words = ["who", "what", "when", "where", "why", "how"]
     
     for question_id, question_info in qa_dict.items():
         question = question_info["Question"]
         story_id = question_id[:10]
         question_embedding = question_info["Embedding"]
         answer = question_info["Answer"]
-        candidates = set()
-        keywords = set()
+        candidates = {}
+        keywords = {}
         doc = nlp(story_dict[story_id]["Text"])
         q_tokens = nlp(question)
 #        displacy.serve(ques, style='dep')
 
+        possessive = False
+        for token in q_tokens:
+            weight = 1
+            word = token.text.lower()
+            if word not in stopwords and word not in question_words and token.dep_!= "punct":
+                if possessive:
+                    weight = 2
+                    possessive = False
+                elif word == "'s":
+                    possessive = True
+                elif token.pos_ == "VERB":
+                    weight = 2
+                keywords[word] = weight    
+
         #WHERE questions
         if question.startswith("Where"):
-#            print("Story:")
-#            print(story_dict[story_id]["Text"])
+            question_type = "where"
             for ent in doc.ents:
 #                print(ent.text, ent.label_)
                 if ent.label_ in ["LOC", "FAC", "GPE"]:
-                    candidates.add(ent.text)
+                    candidates[ent.text] = ent.start
             for chunk in doc.noun_chunks:
-                for candidate in candidates.copy():
+                for candidate in copy.deepcopy(candidates):
                    if candidate in chunk.text:
-                       candidates.remove(candidate)
-                       candidates.add(chunk.text)
-                for prep in ["in","at","on"]:
+                       del candidates[candidate]
+                       candidates[chunk.text] = chunk.start
+                for prep in ["in","at","on", "into", "inside", "outstide"]:
                     if prep == chunk.root.head.text:
-                        candidates.add(prep + " " + chunk.text)
-            for q_token in q_tokens:
-                if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
-                    keywords.add(q_token.text)
-                if q_token.dep_ == "ROOT":
-                    for child in q_token.children:
-                        if child.dep_ != "punct" and child.text != "Where":
-                            keywords.add(child.text)
- #           print("keywords: {}".format(keywords))       
+                        candidates[prep + " " + chunk.text] = chunk.start - 1
+
        #WHO questions        
         elif  question.startswith("Who"):
-#            for token in nlp(question):
-#                print(token.text, token.dep_, token.head.text)
-
+            question_type = "who"
             for ent in doc.ents:
                 if ent.label_ in ["GPE","NORP","ORG","PERSON"]:
-#                    print(ent.text, ent.label_)
-                    candidates.add(ent.text)
+                    candidates[ent.text] = ent.start
+            for candidate in copy.deepcopy(candidates):
+                if candidate in question:
+                    del candidates[candidate]
             for chunk in doc.noun_chunks:
- #               print(chunk.text)
-                for candidate in candidates.copy():
+                for candidate in copy.deepcopy(candidates):
                     if candidate in chunk.text:
-                        candidates.remove(candidate)
-                        candidates.add(chunk.text)
-            #print("Candidates: {}".format(candidates))
-            for q_token in q_tokens:
-                if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
-                    keywords.add(q_token.text.lower())
-           
-                if q_token.dep_ == "ROOT":
-                    for child in q_token.children:
-                        if child.dep_ != "punct" and child.text != "Who":
-                            keywords.add(child.text)
-        
+                        del candidates[candidate]
+                        candidates[chunk.text] = chunk.start
+
         #WHEN questions
         elif question.startswith("When"):
-            from_to_candidate = re.search("^[Ff]+rom [\d\w\s,.]+ to [\d\w\s,.]+$", story_dict[story_id]["Text"])
-            if from_to_candidate is not None:
-                candidates.add(from_to_candidate.group())
+            question_type = "when"
+            from_to_candidates = re.search("^[Ff]+rom [\d\w\s,.]+ to [\d\w\s,.]+$", story_dict[story_id]["Text"])
+            if from_to_candidates is not None:
+                for candidate in from_to_candidates:
+                    candidate = candidate.group()
+                    index = find_position_of_phrase(candidate, doc)
+                    candidates[candidate] = index 
+
             for token in doc:
                 if token.text == "when":
                     head = token.head
                     phrase = ""
                     for word in head.subtree:
                         phrase = phrase + word.text + " "
-                    candidates.add(phrase)
+                    candidates[phrase] = head.i
 
             for ent in doc.ents:
                 if ent.label_ in["DATE","EVENT","TIME"]:
-                    candidates.add(ent.text)
+                    candidates[ent.text] = ent.start
             for chunk in doc.noun_chunks:
-                for candidate in candidates.copy():
+                for candidate in copy.deepcopy(candidates):
                     if candidate in chunk.text:
-                        candidates.remove(candidate)
-                        candidates.add(chunk.text)
+                        del candidates[candidate]
+                        candidates[chunk.text] = chunk.start
                 for prep in ["during", "after", "before", "while", "as"]:
                     if chunk.root.head.text == prep:
-                        candidates.add(prep + " " + chunk.text)
-            for q_token in q_tokens:
-                if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
-                    keywords.add(q_token.text.lower())
-           
-                if q_token.dep_ == "ROOT":
-                    for child in q_token.children:
-                        if child.dep_ != "punct" and child.text != "When":
-                            keywords.add(child.text)
+                        candidates[prep + " " + chunk.text] = chunk.start - 1
 
-        #HOW MANY
+#        #HOW MANY
         elif question.startswith("How"):
+            question_type = "how"
             second_word = question.split(' ')[1]
             if second_word == "many": 
                 for ent in doc.ents:
                     if ent.label_ in ["CARDINAL","PERCENT","QUANTITY"]:
-                        candidates.add(ent.text)
-                for q_token in q_tokens:
-                    if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj", "attr"]:
-                        keywords.add(q_token.text.lower())
-           
-                    if q_token.dep_ == "ROOT":
-                        for child in q_token.children:
-                            if child.dep_ != "punct" and child.text != "How":
-                                keywords.add(child.text)
+                        candidates[ent.text] = ent.start
 
             #HOW MUCH
             elif second_word == "much":
                 for ent in doc.ents:
                     if ent.label_ in ["MONEY","PERCENT"]:
-                        candidates.add(ent.text)
-                for q_token in q_tokens:
-                    if q_token.dep_ in ["nsubj", "dobj", "pobj", "iobj","attr"]:
-                        keywords.add(q_token.text.lower())
-           
-                    if q_token.dep_ == "ROOT":
-                        for child in q_token.children:
-                            if child.dep_ != "punct" and child.text != "How":
-                                keywords.add(child.text)
+                        candidates[ent.text] = ent.start
 
             else:
                 for q_token in q_tokens:
@@ -283,20 +302,13 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                         if q_token.pos_ in ["ADV", "ADJ"]:
                             for ent in doc.ents:
                                 if ent.label_ in ["CARDINAL", "ORDINAL", "QUANTITY"]:
-                                    candidates.add(ent.text)
-                            for token in q_tokens:
-                                if token.dep_ in ["nsubj", "dobj", "pobj", "iobj","attr"]:
-                                    keywords.add(token.text.lower())
-                   
-                                if token.dep_ == "ROOT":
-                                    for child in token.children:
-                                        if child.dep_ != "punct" and child.text != "How":
-                                            keywords.add(child.text)
+                                    candidates[ent.text] = ent.start
 
                         if q_token.pos_ in ["AUX", "VERB"]:
                             for word in q_tokens:
                                 if word.dep_ == "nsubj":
                                     subject = word.text
+                                    index = word.i
  #                                   print("Subject {}".format(subject))
                                     for w in doc:
                                         if w.text == subject:
@@ -309,20 +321,16 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                                                     phrase = phrase + word.text
                                                 else:
                                                     phrase = phrase + word.text + " "
-                                            candidates.add(phrase)
+                                            candidates[phrase] = index
+                                            #candidates[phrase] = find_position_of_phrase(phrase, doc)
 #                                            print("Phrase added: {}".format(phrase))
-                                if word.dep_ in ["dobj", "pobj", "iobj","attr"]:
-                                    keywords.add(word.text.lower())
-                   
-                                if word.dep_ == "ROOT":
-                                    for child in word.children:
-                                        if child.dep_ != "punct" and child.text != "How":
-                                            keywords.add(child.text)
-        
+       
         else:
+       #if question.startswith("What"):
             for word in q_tokens:
                 if word.dep_ == "nsubj":
                     subject = word.text
+                    index = word.i
                     for w in doc:
                         if w.text == subject:
                             subtree = w.head.subtree
@@ -334,53 +342,53 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                                     phrase = phrase + word.text
                                 else:
                                     phrase = phrase + word.text + " "
-                            candidates.add(phrase)
- #                           print("Phrase added: {}".format(phrase))
+                            candidates[phrase] = index
+#                           print("Phrase added: {}".format(phrase))
 
-                if word.dep_ in ["dobj", "pobj", "iobj","attr"]:
-                    keywords.add(word.text.lower())
-
-                if word.dep_ == "ROOT":
-                    for child in word.children:
-                        if child.dep_ != "punct" and child.text not in ["Why","What"]:
-                            keywords.add(child.text)
             if len(candidates) == 0:
-                for word in q_tokens:
-                    if word.pos_ == "VERB":
-                        verb = word.text
-                        for w in doc:
-                            if st.stem(w.text) == st.stem(verb):
-                                subtree = w.head.subtree
-                                phrase = ""
-                                for word in subtree:
-                                    if word.dep_ in ["punct", "case", "neg"]:
-                                        phrase = phrase[:-1]
-                                    if word.text in ["-","$"]:
-                                        phrase = phrase + word.text
-                                    else:
-                                        phrase = phrase + word.text + " "
-                                candidates.add(phrase)
-        
+                max_score = -math.inf
+                phrase = ""
+                sentence_start_pos = 0
+                for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
+                    sentence_embedding = story_dict[story_id]["Embeddings"][index]
+                    similarity_score = cosine_similarity(question_embedding, sentence_embedding)
+                    if similarity_score > max_score:
+                        max_score = similarity_score
+                        phrase = sentence
+                        sentence_start_pos = story_dict[story_id]["Sentence_Index"][index]
+                candidates[phrase] = sentence_start_pos
+
         max_score = -math.inf 
         best_candidate = ""
         similarity_score = 0
-        for candidate in candidates:
+        for candidate, c_index in candidates.items():
             phrase = True
-            #print("Candidate for consideration: {}".format(candidate))
-            for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
-                if candidate in sentence:
-                    sentence_embedding = story_dict[story_id]["Embeddings"][index]
-                    similarity_score = cosine_similarity(question_embedding, sentence_embedding)
+   #         print("Candidate for consideration: {}".format(candidate))
+            for s_index, sentence in enumerate(story_dict[story_id]["Sentences"]):
+                sentence_start_pos = story_dict[story_id]["Sentence_Index"][s_index]
+                if s_index == len(story_dict[story_id]["Sentences"]) - 1:
+                    sentence_end_pos = np.inf
+                else:
+                    sentence_end_pos = story_dict[story_id]["Sentence_Index"][s_index+1] - 1
+                #print("Candidate index: {}, sentence start position: {}, sentence end position: {}".format(c_index, sentence_start_pos, sentence_end_pos))
+                if c_index >= sentence_start_pos and c_index < sentence_end_pos:
+                    sentence_embedding = story_dict[story_id]["Embeddings"][s_index]
+                    similarity_score = cosine_similarity(question_embedding, sentence_embedding)[0][0]
                     phrase = False
-            
+    #                print("similarity score: {}".format(similarity_score))
             if phrase:
+     #           print("Candidate was not found in the sentences and embedding score wasn't used")
                 phrase_embedding = get_bert_embedding(candidate, tokenizer, bert_model)
                 similarity_score = cosine_similarity(question_embedding, phrase_embedding)
+                
             if len(keywords) > 0:
-                keywords_score = keyword_distance(keywords, candidate, doc)
+                keywords_score = keyword_distance(keywords, candidate, c_index, doc)
             else:
                 keywords_score = 0
+      #      print("Keywords score: {}".format(keywords_score))
+            #additional_score = special_score_heuristics(question_type, candidate, c_index, doc)
             score = similarity_score + keywords_score
+       #     print("Score: {}".format(score))
 
             if score > max_score:
                 max_score = score
@@ -392,10 +400,13 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
         print("QuestionID: {}".format(question_id))
         print("Answer: {}".format(best_candidate))            
         print()
-#        if question.startswith("Where"):
-#            print("Question: {}".format(question))            
+#        if question.startswith("Who"):
+#            print("QuestionID: {}".format(question_id))            
+#            print("Answer: {}".format(best_candidate))
+#            print()
+#            print("Question: {}".format(question))
 #            print("Answer Candidate: {}".format(best_candidate))
-#            print("Actual Answer: {}".format(answer))
+#            print("Answer: {}".format(answer))
 #            print()
 
 if __name__ == '__main__':
