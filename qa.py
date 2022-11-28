@@ -1,3 +1,14 @@
+'''
+Janaan Lake
+CS_6340 Final Project
+Fall 2022
+
+This program is a question answering system.  It takes stories and questions from the Canadian Broadcasting Corporation and tries to answer the questions.
+The input to the program is a text file, the first line of the input file is a directory path.  Each subsequent line is a story ID.  For each story id,
+the directory is supposed to contain file (*.story), an answer file (*.answer) and a question file (*.question).  This program produces a response file printed
+to standard output, which contains the answers for all of the stories and questions in the input file.  
+'''
+
 import sys
 import numpy as np
 import spacy
@@ -5,14 +16,19 @@ import torch
 import pickle
 import re
 import math
+import neuralcoref
 import copy
-#import argparse
 from transformers import AutoTokenizer, AutoModel
 from tqdm import tqdm
-from sklearn.metrics.pairwise import cosine_similarity   
 from nltk.stem.lancaster import LancasterStemmer
-from spacy import displacy
+from numpy.linalg import norm
+from spacy.matcher import PhraseMatcher
 
+'''
+This function creates a set of stopwords from the file "stopwords.txt" found in the same directory.
+Input:  None
+Returns:  A set containing stopwords
+'''
 def process_stopwords():                                                                                                                                              
     stopwords = set()
     filename = "stopwords.txt"
@@ -25,9 +41,12 @@ def process_stopwords():
         return stopwords
 
 '''
-Takes a string of text, a bert tokenizer and a bert model and returns an embedding vector of size (1,768)
+This function takes a string of text, a bert tokenizer and a bert model and returns an embedding vector of size (1,768)
+Input:  text : string
+        tokenizer:  tokenizer for the BERT model
+        bert_model:  The bert_model used for the embedding
+Returns:  A numpy array of size (1,768) that represents the bert embedding for the input text
 '''
-
 def get_bert_embedding(text, tokenizer, bert_model):
     
     encoded_input = tokenizer.encode_plus(text, max_length=128, truncation=True, padding='max_length', return_tensors='pt')                                             
@@ -41,45 +60,52 @@ def get_bert_embedding(text, tokenizer, bert_model):
     mean_pooled = summed / summed_mask
     return mean_pooled.detach().numpy()
 
-def find_position_of_phrase(phrase, doc):
-    text = phrase.split()
-    start_pos = 0
-    cur_pos = 0
-    text_index = 0
-    for token in doc:
-        if token.text == text[text_index]:
-            if start_pos == 0:
-                start_pos = token.i
-            text_index += 1
-            if text_index == len(text):
-                break
-        else:
-            start_pos == 0
-   
-    #if start_pos == 0:
-        #print("Could not find position of {} in document".format(phrase))
-    return start_pos
 
+#'''
+#This function find the starting index of a phrase in the story document
+#Input:      phrase : string
+#            doc:  Spacy NLP object of the story to be searched
+#Returns:    The starting index of the phrase
+#'''
+#
+#def find_position_of_phrase(phrase, doc):
+#    text = phrase.split()
+#    start_pos = 0
+#    text_index = 0
+#    for token in doc:
+#        if token.text == text[text_index]:
+#            if start_pos == 0:
+#                start_pos = token.i
+#            text_index += 1
+#            if text_index == len(text):
+#                break
+#        else:
+#            start_pos == 0
+#   
+#    return start_pos
+
+'''
+This function computes the average distance of all keywords to the start position of a given candidate.
+Input:      keywords:  A dictionary of keywords, key value is the keyword string and value is the weight of the keyword
+            candidate:  string
+            c_index:  The starting index in the story of the candidate
+            doc:  NLP object of the story
+Returns:    The inverse of the average distance of all keywords to the candidate
+'''
 def keyword_distance(keywords, candidate, c_index, doc):
     st = LancasterStemmer()
     keywords_dist = np.array(np.ones(len(keywords)) * np.inf)
-#    print("Keywords: {}".format(keywords))
-    
     index = 0
     for keyword, weight in keywords.items():
- #       print(keyword)
         min_dist = np.inf
         for token in doc:
             if st.stem(keyword) == st.stem(token.text.lower()):
-            #if keyword == token.text.lower():
                 dist = abs(c_index - token.i)
                 if dist < min_dist:
                     min_dist = dist
         keyword_distance = min_dist / weight
-  #      print(keyword_distance)
         keywords_dist[index] = keyword_distance    
         index += 1
-
 
     keywords_dist[keywords_dist == np.inf] = 0
     average = np.mean(keywords_dist)
@@ -89,33 +115,119 @@ def keyword_distance(keywords, candidate, c_index, doc):
         return 0
             
 
-def special_score_heuristics(question_type, candidate, index, doc):
-   score = 0
-   candidate_words = list(candidate.split())
-   end_index = index + len(candidate_words)
-   for token in doc:
-       if token.i >= index and token.i <+ end_index:
-           if question_type in ['where', 'who'] and token.dep_ == 'pobj':
-               score = 0.25
-               break
-   return score
+#def special_score_heuristics(question_type, question, candidate, index, doc, nlp):
+#    
+#    score = 0.0
+#    if question_type == "What":
+#        ques = nlp(question)
+#        for ent in ques.ents:
+#            if ent.label_ in ["DATE", "TIME", "EVENT"]:
+#                for time in ["today", "yesterday", "tomorrow","last"]:
+#                    if time in candidate:
+#                        score = score + 0.20
+#            if ent.label in ["NAME"]:
+#                for word in ["name", "known", "call"]:
+#                    if word in candidate:
+#                        score = score + 0.2
+#                for q in ques:
+#                    if q.pos_ == "ADP":
+#                        for c in nlp(candidate).ents:
+#                            if c.label_ == "NAME" and c.text not in question:
+#                                score = score + 0.3
+#        if "kind" in question:
+#            if "from" in candidate:
+#                score = score + 0.2
+#
+#    
+#    if question_type in ["where", "who"]:
+#
+#        end_index = index + len(candidate) - 1
+#        for token in doc:
+#            if token.i >= index and token.i <= end_index:
+#                if token.dep_ == 'pobj' or token.dep_ == 'nsubj':
+#                #print(token.text)
+#                    score = score + 0.1
+#    return score
+
+'''
+This function takes a entity candidate and updates the candidate to include the noun phrase it is found in, adds prepositional phrases that are related
+    to the question type, and deletes candidates where 75% or more of the candidate is fond in the question
+Input:      question:  string
+            candidate: a dictionary of candidates
+            doc: NLP object of the story
+            preps:  A list of strings containing prepositions 
+Returns:    The updated dictionary of candidates.
+'''
+def update_candidates(question, candidates, doc, preps = None):
+    
+    #Find prepositional phrase that might be of interest
+    if preps is not None:
+        for token in doc:
+            if token.pos_ == "ADP" and token.text in preps:
+                pp = ' '.join([tok.orth_ for tok in token.subtree])
+                candidates[pp] = token.i
+    
+    #update candidates to include full noun phrase
+    for chunk in doc.noun_chunks:
+        for candidate in copy.deepcopy(candidates):
+           if candidate in chunk.text:
+               del candidates[candidate]
+               candidates[chunk.text] = chunk.start
+    
+    #deletes candidates where 75% or more of the candidate phrase is found in the question
+    for candidate in copy.deepcopy(candidates):
+        candidate_words = candidate.split(" ")
+        num_matches = 0
+        for word in candidate_words:
+            if word in question:
+                num_matches +=1
+        if num_matches / len(candidate_words) >= 0.75:
+            del candidates[candidate]
+    
+    return candidates
 
 
+'''
+This function uses the nueralcoref library to resolve coreferences in the story
+Input:      story:  string
+            nlp:  the NLP Spacy object
+Returns:    The story (string) that includes the resolved references
+'''
+def get_coreferences(story, nlp):
 
+    doc = nlp(story)
+    if doc._.has_coref:
+        resolved_doc = doc._.coref_resolved
+        return resolved_doc
+    else:
+        return story
+
+
+'''
+This function processes the input files and creates dictionaries for the stories and questions
+Input:      input_file:  string (path of the input file)
+            nlp:    The NLP Spacy object
+            tokenizer:  The tokenizer for the bert model
+            bert_model: The bert model
+            process:  Boolean indicating whether the files need to be processed or can be restored from pickled files
+
+Returns:    story_dict:  A dictionary of the stories
+            qa_dict:  A dictionary of the questions
+'''
 def process_data(input_file, nlp, tokenizer, bert_model, process=True):
 
     if process:
-
 
         '''
         Dictionary that contains all of the information for the story.
         The key is the story id and the value is another dictionary that contains the full text, a list of sentences,
         a list of their bert_encodings and the nlp information for the text corpus.
-        {<story_id>: {"Text": <story_text_string>, "Sentences":{A list of strings that are the sentences in the corpus.  Listed in order], "Embeding":[list of embedding vectors],
+        {<story_id>: {"Text": <story_text_string>, "Sentences":{A list of strings that are the sentences in the corpus.  Listed in order], 
+        "Sentence_Index": [list of indexes that are the starting position of each sentence in the document], "Embeding":[list of embedding vectors],
         "NLP": <nlp info derived using Spacy>}}
         '''
         story_dict = {}
-
+        
         '''
         Dictionary that contains the qestions and answers.  The key is the question_id and the values are a dictionary with the question text, answer text, embedding
         vector for the question.
@@ -123,26 +235,23 @@ def process_data(input_file, nlp, tokenizer, bert_model, process=True):
         '''
         qa_dict = {}
 
-
         with open(input_file) as f:
             contents = [ line.strip() for line in f ]
         directory = contents[0]
         for i in tqdm(range(1, len(contents))):
-        #for i in range(1, len(contents)):
             item = contents[i]
             for file in [".story", ".questions", ".answers"]:
                 path = directory + item + file
                 with open(path) as f:
                     input_data = [ line.strip() for line in f ]
                     input_data = list(filter(None, input_data))
-                    
-                    #if the document is a story, the entire text is saved in a dictionary along with a list of individuals sentences and their bert embeddings
                     if file == ".story":
                         story_info = {"Text":None, "Sentences":None, "Sentence_Index":None, "Embeddings":None, "NLP":None}
                         story_id = input_data[2].replace("STORYID: ","")
                         story = " ".join(input_data[4:])
-                        story_info["Text"] = story
-                        doc = nlp(story)
+                        new_story = get_coreferences(story, nlp)
+                        story_info["Text"] = new_story
+                        doc = nlp(new_story)
                         sentences = [sent.text for sent in doc.sents]
                         story_info["Sentences"] = sentences
                         sentence_start_index = [sent.start for sent in doc.sents]
@@ -178,17 +287,26 @@ def process_data(input_file, nlp, tokenizer, bert_model, process=True):
 #        outfile = open(filename,'wb')
 #        pickle.dump(qa_dict,outfile)
 #        outfile.close()
-
-    else:
-        infile = open("story_dict",'rb')
-        story_dict = pickle.load(infile)
-        infile.close()
-        
-        infile = open("qa_dict",'rb')
-        qa_dict = pickle.load(infile)
-        infile.close()
-
+#
+#    else:
+#        infile = open("story_dict",'rb')
+#        story_dict = pickle.load(infile)
+#        infile.close()
+#        
+#        infile = open("qa_dict",'rb')
+#        qa_dict = pickle.load(infile)
+#        infile.close()
+#
     return story_dict, qa_dict
+
+'''
+This function creates the answers to the questions.
+Input:      story_dict:  A dictionary containing the story information
+            qa_dicct:  A dictionary containing the question information
+            nlp:  The Spacy NLP object
+            bert_model:  the BERT model
+            tokenizer:   The tokenizer for the BERT model
+'''
 
 def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
     st = LancasterStemmer()
@@ -196,16 +314,27 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
     question_words = ["who", "what", "when", "where", "why", "how"]
     
     for question_id, question_info in qa_dict.items():
+        question_type = None
         question = question_info["Question"]
         story_id = question_id[:10]
         question_embedding = question_info["Embedding"]
         answer = question_info["Answer"]
+        
+        '''
+        Dictionary that contains information for each question candidate
+        {<candidate phrase>: index(int) of starting position of candidate phrase}
+        '''
         candidates = {}
+        
+        '''
+        Dictionary that contains information for the keywords found in the question.
+        {<keyword>: weight(int) given to each keyword}
+        '''
         keywords = {}
-        doc = nlp(story_dict[story_id]["Text"])
+        doc = story_dict[story_id]["NLP"]
         q_tokens = nlp(question)
-#        displacy.serve(ques, style='dep')
 
+        #Create keywords dictionary
         possessive = False
         for token in q_tokens:
             weight = 1
@@ -217,48 +346,37 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                 elif word == "'s":
                     possessive = True
                 elif token.pos_ == "VERB":
-                    weight = 2
+                    weight = 3
                 keywords[word] = weight    
 
         #WHERE questions
         if question.startswith("Where"):
             question_type = "where"
+            preps = ["in", "at", "on", "into", "inside", "outside"]
             for ent in doc.ents:
-#                print(ent.text, ent.label_)
                 if ent.label_ in ["LOC", "FAC", "GPE"]:
                     candidates[ent.text] = ent.start
-            for chunk in doc.noun_chunks:
-                for candidate in copy.deepcopy(candidates):
-                   if candidate in chunk.text:
-                       del candidates[candidate]
-                       candidates[chunk.text] = chunk.start
-                for prep in ["in","at","on", "into", "inside", "outstide"]:
-                    if prep == chunk.root.head.text:
-                        candidates[prep + " " + chunk.text] = chunk.start - 1
-
+            candidates = update_candidates(question, candidates, doc, preps)
+            
        #WHO questions        
         elif  question.startswith("Who"):
             question_type = "who"
             for ent in doc.ents:
                 if ent.label_ in ["GPE","NORP","ORG","PERSON"]:
                     candidates[ent.text] = ent.start
-            for candidate in copy.deepcopy(candidates):
-                if candidate in question:
-                    del candidates[candidate]
-            for chunk in doc.noun_chunks:
-                for candidate in copy.deepcopy(candidates):
-                    if candidate in chunk.text:
-                        del candidates[candidate]
-                        candidates[chunk.text] = chunk.start
+            candidates = update_candidates(question, candidates, doc, preps=None)
 
         #WHEN questions
         elif question.startswith("When"):
             question_type = "when"
+
             from_to_candidates = re.search("^[Ff]+rom [\d\w\s,.]+ to [\d\w\s,.]+$", story_dict[story_id]["Text"])
             if from_to_candidates is not None:
-                for candidate in from_to_candidates:
-                    candidate = candidate.group()
-                    index = find_position_of_phrase(candidate, doc)
+                matcher = PhraseMatcher(nlp.vocab)
+                for candidate in from_to_candidates.group():
+                    matcher.add(candidate, [nlp(candidate)])
+                    matches = matcher(doc)
+                    index = matches.start
                     candidates[candidate] = index 
 
             for token in doc:
@@ -272,16 +390,10 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
             for ent in doc.ents:
                 if ent.label_ in["DATE","EVENT","TIME"]:
                     candidates[ent.text] = ent.start
-            for chunk in doc.noun_chunks:
-                for candidate in copy.deepcopy(candidates):
-                    if candidate in chunk.text:
-                        del candidates[candidate]
-                        candidates[chunk.text] = chunk.start
-                for prep in ["during", "after", "before", "while", "as"]:
-                    if chunk.root.head.text == prep:
-                        candidates[prep + " " + chunk.text] = chunk.start - 1
+            preps = ["during", "after", "before", "while", "as"]
+            candidates = update_candidates(question, candidates, doc, preps)
 
-#        #HOW MANY
+        #HOW MANY
         elif question.startswith("How"):
             question_type = "how"
             second_word = question.split(' ')[1]
@@ -308,8 +420,6 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                             for word in q_tokens:
                                 if word.dep_ == "nsubj":
                                     subject = word.text
-                                    index = word.i
- #                                   print("Subject {}".format(subject))
                                     for w in doc:
                                         if w.text == subject:
                                             subtree = w.head.subtree
@@ -321,16 +431,16 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                                                     phrase = phrase + word.text
                                                 else:
                                                     phrase = phrase + word.text + " "
-                                            candidates[phrase] = index
-                                            #candidates[phrase] = find_position_of_phrase(phrase, doc)
-#                                            print("Phrase added: {}".format(phrase))
+                                            candidates[phrase] = w.i
+            candidates = update_candidates(question, candidates, doc, preps = None)
        
+       #WHAT, WHY and all other questions 
         else:
-       #if question.startswith("What"):
+            if question.startswith("What"):
+                question_type = "what"
             for word in q_tokens:
                 if word.dep_ == "nsubj":
                     subject = word.text
-                    index = word.i
                     for w in doc:
                         if w.text == subject:
                             subtree = w.head.subtree
@@ -342,86 +452,67 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                                     phrase = phrase + word.text
                                 else:
                                     phrase = phrase + word.text + " "
-                            candidates[phrase] = index
-#                           print("Phrase added: {}".format(phrase))
+                            candidates[phrase] = w.i
+        
+            if question.startswith("Why"):
+                keywords["because"] = 2
+                keywords["want"] = 1
+                question_type = "why"
 
-            if len(candidates) == 0:
-                max_score = -math.inf
-                phrase = ""
-                sentence_start_pos = 0
-                for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
-                    sentence_embedding = story_dict[story_id]["Embeddings"][index]
-                    similarity_score = cosine_similarity(question_embedding, sentence_embedding)
-                    if similarity_score > max_score:
-                        max_score = similarity_score
-                        phrase = sentence
-                        sentence_start_pos = story_dict[story_id]["Sentence_Index"][index]
-                candidates[phrase] = sentence_start_pos
-
+        #if we don't have any candidates, then just find the most similar sentence and use that as the candidate phrase
+        if len(candidates) == 0:
+            max_score = -math.inf
+            phrase = ""
+            sentence_start_pos = 0
+            for index, sentence in enumerate(story_dict[story_id]["Sentences"]):
+                sentence_embedding = story_dict[story_id]["Embeddings"][index]
+                similarity_score = np.dot(question_embedding, sentence_embedding.T)/(norm(question_embedding) * norm(sentence_embedding))
+                if similarity_score > max_score:
+                    max_score = similarity_score
+                    phrase = sentence
+                    sentence_start_pos = story_dict[story_id]["Sentence_Index"][index]
+            candidates[phrase] = sentence_start_pos
+            
         max_score = -math.inf 
         best_candidate = ""
         similarity_score = 0
         for candidate, c_index in candidates.items():
-            phrase = True
-   #         print("Candidate for consideration: {}".format(candidate))
             for s_index, sentence in enumerate(story_dict[story_id]["Sentences"]):
                 sentence_start_pos = story_dict[story_id]["Sentence_Index"][s_index]
                 if s_index == len(story_dict[story_id]["Sentences"]) - 1:
                     sentence_end_pos = np.inf
                 else:
                     sentence_end_pos = story_dict[story_id]["Sentence_Index"][s_index+1] - 1
-                #print("Candidate index: {}, sentence start position: {}, sentence end position: {}".format(c_index, sentence_start_pos, sentence_end_pos))
                 if c_index >= sentence_start_pos and c_index < sentence_end_pos:
                     sentence_embedding = story_dict[story_id]["Embeddings"][s_index]
-                    similarity_score = cosine_similarity(question_embedding, sentence_embedding)[0][0]
-                    phrase = False
-    #                print("similarity score: {}".format(similarity_score))
-            if phrase:
-     #           print("Candidate was not found in the sentences and embedding score wasn't used")
-                phrase_embedding = get_bert_embedding(candidate, tokenizer, bert_model)
-                similarity_score = cosine_similarity(question_embedding, phrase_embedding)
+                    similarity_score = np.dot(question_embedding, sentence_embedding.T)/(norm(question_embedding) * norm(sentence_embedding))
                 
             if len(keywords) > 0:
                 keywords_score = keyword_distance(keywords, candidate, c_index, doc)
             else:
                 keywords_score = 0
-      #      print("Keywords score: {}".format(keywords_score))
-            #additional_score = special_score_heuristics(question_type, candidate, c_index, doc)
-            score = similarity_score + keywords_score
-       #     print("Score: {}".format(score))
+            #additional_score = special_score_heuristics(question_type, question, candidate, c_index, doc, nlp)
+            score = similarity_score + keywords_score #+ additional_score
 
             if score > max_score:
                 max_score = score
                 best_candidate = candidate
-#        print("Question: {}".format(question))
-#        print("Answer Candidate: {}".format(best_candidate))
-#        print("Answer: {}".format(answer))
-#        print()
         print("QuestionID: {}".format(question_id))
         print("Answer: {}".format(best_candidate))            
         print()
-#        if question.startswith("Who"):
-#            print("QuestionID: {}".format(question_id))            
-#            print("Answer: {}".format(best_candidate))
-#            print()
-#            print("Question: {}".format(question))
-#            print("Answer Candidate: {}".format(best_candidate))
-#            print("Answer: {}".format(answer))
-#            print()
+
+
 
 if __name__ == '__main__':
     
-#    my_parser = argparse.ArgumentParser()
-#    my_parser.add_argument('--process_data', dest='process', default=True, action='store_false')
-#    args = my_parser.parse_args()
     input_file = sys.argv[1]
     nlp = spacy.load("en_core_web_sm")
+    neuralcoref.add_to_pipe(nlp)
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
     bert_model = AutoModel.from_pretrained("bert-base-uncased")
     
     #open file for processing
-    story_dict, qa_dict = process_data(input_file, nlp, tokenizer, bert_model, process=False)
-    #print(story_dict, qa_dict)
+    story_dict, qa_dict = process_data(input_file, nlp, tokenizer, bert_model, process=True)
     create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer)
 
 
