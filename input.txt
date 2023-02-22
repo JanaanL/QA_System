@@ -1,4 +1,4 @@
-/Users/janaanlake/Documents/CS_6340/Project/devset-official/
+devset-official/
 1999-W02-5
 1999-W03-5
 1999-W04-5
