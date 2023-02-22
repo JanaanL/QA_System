@@ -100,6 +100,7 @@ def keyword_distance(keywords, candidate, c_index, doc):
         min_dist = np.inf
         for token in doc:
             if st.stem(keyword) == st.stem(token.text.lower()):
+            #if keyword == token.lemma_:
                 dist = abs(c_index - token.i)
                 if dist < min_dist:
                     min_dist = dist
@@ -347,6 +348,7 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                     possessive = True
                 elif token.pos_ == "VERB":
                     weight = 3
+                #lemma = token.lemma_
                 keywords[word] = weight    
 
         #WHERE questions
@@ -433,9 +435,10 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
                                                     phrase = phrase + word.text + " "
                                             candidates[phrase] = w.i
             candidates = update_candidates(question, candidates, doc, preps = None)
-       
+      
        #WHAT, WHY and all other questions 
-        else:
+        if question.startswith("Why"):
+        #else:
             if question.startswith("What"):
                 question_type = "what"
             for word in q_tokens:
@@ -497,9 +500,13 @@ def create_answers(story_dict, qa_dict, nlp, bert_model, tokenizer):
             if score > max_score:
                 max_score = score
                 best_candidate = candidate
-        print("QuestionID: {}".format(question_id))
-        print("Answer: {}".format(best_candidate))            
-        print()
+        if question.startswith("Why"):
+            print("QuestionID: {}".format(question_id))
+            print("Answer: {}".format(best_candidate))            
+            print()
+#        print("QuestionID: {}".format(question_id))
+#        print("Answer: {}".format(best_candidate))            
+#        print()
 
 
 
