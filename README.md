@@ -29,5 +29,5 @@ The QA system produces a single response file, printed to standard output, which
 To run the program type the following on the command line:  
 `$ python3 qa.py <input_file.txt>`  
 
-The final project presentation can be found [here] (https://github.com/JanaanL/QA_System/blob/main/ProjectPresentation.pdf).
+The final project presentation can be found [here](https://github.com/JanaanL/QA_System/blob/main/ProjectPresentation.pdf).
 
