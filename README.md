@@ -18,7 +18,7 @@ https://spacy.io/universe/project/neuralcoref
 The following data files are used for this project:  
 stopwords.txt  
 input.txt  
-\devset-official\
+devset-official\
 
 The first line of the input file is a directory path.  Each subsequent line in the file is a StoryID.  For each StoryID, the directory containts a story file named StoryID.story (e.g. "1999-W02-5.story") and a question file named StoryID questions (e.g. "1999-W02-5.questions").  The QA system produces an answer for each question in the question file based on the corresponding story file.
 
